@@ -1,0 +1,68 @@
+name: "Draft GitHub Release"
+description: "Collects release artifacts, computes sha256 checksums, and creates or updates a draft GitHub Release"
+
+inputs:
+  version:
+    description: "Release version string without 'v' prefix"
+    required: true
+  app-title:
+    description: "Human-readable application name"
+    required: true
+  prerelease:
+    description: "Whether release is marked as prerelease"
+    required: false
+    default: "false"
+  github-token:
+    description: "GitHub token for authenticating gh CLI"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Download all release artifacts
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        pattern: release-*
+        path: artifacts
+        merge-multiple: true
+
+    - name: Compute checksums
+      shell: bash
+      working-directory: artifacts
+      run: |
+        sha256sum -- * | tee SHA256SUMS.txt
+
+    - name: Create or update draft release
+      shell: bash
+      working-directory: artifacts
+      env:
+        VERSION: ${{ inputs.version }}
+        APP_TITLE: ${{ inputs.app-title }}
+        PRERELEASE: ${{ inputs.prerelease }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        GH_REPO: ${{ github.repository }}
+      run: |
+        tag="v$VERSION"
+        title="$APP_TITLE v$VERSION"
+        pre=()
+        if [ "$PRERELEASE" = "true" ]; then pre=(--prerelease); fi
+        if draft="$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null)"; then
+          if [ "$draft" != "true" ]; then
+            echo "::error::Release $tag is already published. Bump the version (cargo xtask version set) before pushing to release."
+            exit 1
+          fi
+          echo "Updating draft $tag: replacing its assets"
+          gh release view "$tag" --json assets --jq '.assets[].name' | while read -r asset; do
+            gh release delete-asset "$tag" "$asset" --yes
+          done
+          gh release edit "$tag" --draft --title "$title" --target "$GITHUB_SHA" --prerelease="$PRERELEASE"
+          gh release upload "$tag" --clobber -- *
+        else
+          echo "Creating draft $tag"
+          gh release create "$tag" --draft --title "$title" --target "$GITHUB_SHA" --generate-notes "${pre[@]}" -- *
+        fi
+        {
+          echo "Draft release **$title** at \`${GITHUB_SHA::9}\`:"
+          echo
+          sed 's/^/    /' SHA256SUMS.txt
+        } >>"$GITHUB_STEP_SUMMARY"

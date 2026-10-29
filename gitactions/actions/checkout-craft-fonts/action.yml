@@ -1,0 +1,24 @@
+name: "Check out craft-fonts"
+description: "Checks out the storytold/craft-fonts repository if a ref is specified"
+
+inputs:
+  ref:
+    description: "The git commit SHA or ref of storytold/craft-fonts"
+    required: false
+    default: ""
+  path:
+    description: "Directory path to check out craft-fonts into"
+    required: false
+    default: "craft-fonts"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Check out craft-fonts
+      if: inputs.ref != ''
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: storytold/craft-fonts
+        ref: ${{ inputs.ref }}
+        path: ${{ inputs.path }}
+        persist-credentials: false

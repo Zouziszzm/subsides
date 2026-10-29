@@ -1,0 +1,75 @@
+"""The shared gate workflow: pinned actions, a cache only the default branch writes, and caller
+input that reaches the shell only through the environment."""
+from pathlib import Path
+import os
+import re
+import subprocess
+import tempfile
+import unittest
+
+import yaml
+
+ROOT = Path(__file__).resolve().parents[1]
+WORKFLOW = yaml.load((ROOT / '.github/workflows/gate.yml').read_text(), Loader=yaml.BaseLoader)
+STEPS = WORKFLOW['jobs']['gate']['steps']
+OWN_ACTION = re.compile(r'^storytold/craft-common-actions/actions/[a-z0-9-]+@main$')
+
+
+def step(name):
+    return next(s for s in STEPS if s.get('name') == name)
+
+
+class GateWorkflowTests(unittest.TestCase):
+    def test_third_party_actions_are_pinned_to_a_commit(self):
+        for s in STEPS:
+            if 'uses' in s:
+                with self.subTest(uses=s['uses']):
+                    if not OWN_ACTION.match(s['uses']):
+                        self.assertRegex(s['uses'], r'@[0-9a-f]{40}$')
+
+    def test_only_pushes_to_the_default_branch_save_the_cache(self):
+        cache = next(s for s in STEPS if 'rust-cache' in s.get('uses', ''))
+        condition = re.sub(r'\s+', ' ', cache['with']['save-if'])
+        self.assertIn("github.event_name != 'pull_request'", condition)
+        self.assertIn('github.ref_name == github.event.repository.default_branch', condition)
+        self.assertNotIn('||', condition)
+
+    def test_inputs_reach_scripts_only_through_env(self):
+        for s in STEPS:
+            if 'run' in s:
+                with self.subTest(step=s.get('name')):
+                    self.assertNotIn('${{', s['run'])
+
+
+class CallerEnvironmentTests(unittest.TestCase):
+    STEP = step('Caller environment')
+
+    def run_step(self, runner_os='Linux', **inputs):
+        env = {'ALL': '', 'LINUX': '', 'WINDOWS': '', 'DEV_DEBUG': '', **inputs}
+        with tempfile.TemporaryDirectory() as directory:
+            github_env = Path(directory, 'github_env')
+            github_env.touch()
+            result = subprocess.run(
+                ['bash', '--noprofile', '--norc', '-eo', 'pipefail', '-c', self.STEP['run']],
+                cwd=directory, capture_output=True, text=True,
+                env={**os.environ, **env, 'RUNNER_OS': runner_os, 'GITHUB_ENV': str(github_env)})
+            return result.returncode, github_env.read_text().splitlines()
+
+    def test_the_step_reads_its_inputs_from_env(self):
+        self.assertEqual(set(self.STEP['env']), {'ALL', 'LINUX', 'WINDOWS', 'DEV_DEBUG'})
+
+    def test_writes_shared_and_per_os_lines(self):
+        inputs = {'ALL': 'A=1\n\nB=two words', 'LINUX': 'ONLY_LINUX=1', 'WINDOWS': 'ONLY_WINDOWS=1',
+                  'DEV_DEBUG': 'line-tables-only'}
+        self.assertEqual(self.run_step('Linux', **inputs), (0, [
+            'CARGO_PROFILE_DEV_DEBUG=line-tables-only', 'A=1', 'B=two words', 'ONLY_LINUX=1']))
+        self.assertEqual(self.run_step('Windows', **inputs)[1][-1], 'ONLY_WINDOWS=1')
+
+    def test_rejects_a_line_that_is_not_key_value(self):
+        for line in ('NOT AN ASSIGNMENT', '1X=1', 'X<<EOF'):
+            with self.subTest(line=line):
+                self.assertEqual(self.run_step(ALL=f'GOOD=1\n{line}')[0], 1)
+
+
+if __name__ == '__main__':
+    unittest.main()

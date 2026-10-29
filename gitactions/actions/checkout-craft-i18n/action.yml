@@ -1,0 +1,46 @@
+name: "Check out craft-i18n"
+description: "Checks out storytold/craft-i18n at the caller's craft-i18n.rev, if it has one, and sets CRAFT_I18N_DIR and CRAFT_I18N_REQUIRED=1 for the rest of the job"
+
+inputs:
+  path:
+    description: "Directory path to check out craft-i18n into"
+    required: false
+    default: "craft-i18n"
+
+outputs:
+  rev:
+    description: "The pinned craft-i18n SHA; empty when the caller has no craft-i18n.rev"
+    value: ${{ steps.pin.outputs.rev }}
+
+runs:
+  using: "composite"
+  steps:
+    # The pin file switches the feature on. Without it this action changes nothing.
+    # Trim it: Windows runners may check it out with CRLF.
+    - name: Read craft-i18n.rev
+      id: pin
+      shell: bash
+      run: |
+        [ -f craft-i18n.rev ] || exit 0
+        rev=$(tr -d '[:space:]' < craft-i18n.rev)
+        if ! [[ "$rev" =~ ^[0-9a-f]{40}$ ]]; then
+          echo "::error file=craft-i18n.rev::expected one 40-character craft-i18n commit SHA, found '$rev'"
+          exit 1
+        fi
+        echo "rev=$rev" >>"$GITHUB_OUTPUT"
+    - name: Check out craft-i18n
+      if: steps.pin.outputs.rev != ''
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: storytold/craft-i18n
+        ref: ${{ steps.pin.outputs.rev }}
+        path: ${{ inputs.path }}
+        persist-credentials: false
+    - name: Require craft-i18n in builds
+      if: steps.pin.outputs.rev != ''
+      shell: bash
+      env:
+        CRAFT_I18N_DIR: ${{ github.workspace }}/${{ inputs.path }}
+      run: |
+        echo "CRAFT_I18N_DIR=$CRAFT_I18N_DIR" >>"$GITHUB_ENV"
+        echo "CRAFT_I18N_REQUIRED=1" >>"$GITHUB_ENV"
